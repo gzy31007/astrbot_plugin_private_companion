@@ -1837,3 +1837,27 @@ test("保存成功后列表读取失败仍按回执显示已添加，并保留�
   assert.match(h.element("notice").className, /error/);
   assert.equal(h.requests.filter((request) => request.method === "POST").length, 1);
 });
+
+test("宿主没有宿主确认能力时，页面内联确认框照常取消与提交一次", async () => {
+  const h = harness({strangers: [refused("999")]});
+  await openRefused(h);
+
+  firstButton(listRow(h, "999")).handlers.click();
+  await h.settle();
+  const dialog = openDialog(h);
+  assert.ok(dialog, "拿不到宿主确认层时必须在页面里退回内联确认框");
+  assert.match(flat(dialog), /仅添加该账号到此收到方，权限沿用现有设置/);
+
+  buttonIn(dialog, "取消").handlers.click();
+  await h.settle();
+  assert.equal(openDialog(h), null);
+  assert.equal(h.requests.filter((request) => request.method === "POST"
+    && request.route === strangerTargetPath).length, 0, "取消不写配置");
+
+  firstButton(listRow(h, "999")).handlers.click();
+  await h.settle();
+  buttonIn(openDialog(h), "确认添加").handlers.click();
+  await h.settle();
+  assert.equal(h.requests.filter((request) => request.method === "POST"
+    && request.route === strangerTargetPath).length, 1, "确认只写一次");
+});

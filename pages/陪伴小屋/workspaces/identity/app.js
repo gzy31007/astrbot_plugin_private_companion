@@ -1485,8 +1485,25 @@
     return new Error("没有收到添加操作的明确回执，当前状态可能已变化；正在重新读取。");
   }
 
-  function confirmStrangerTarget(item) {
+  async function confirmStrangerTarget(item) {
     if (!bridge || strangerSubmitting) return;
+    /* 工作区在 sandbox 里，能盖住插件视口的模态层只有宿主开得出来；
+       宿主声明了确认能力就走它，没声明/没答复时保留下面的内联确认框。 */
+    if (typeof bridge.confirm === "function") {
+      const confirmed = await bridge.confirm({
+        title: "允许此账号私聊",
+        message: "仅添加该账号到此收到方，权限沿用现有设置。",
+        details: [{title: "本次范围", fields: [
+          `发信账号：${item.peer || "未知"}`,
+          `收到方：${item.login || "未知"}`,
+          `平台：${item.platform_id || "未知"}`,
+        ]}],
+        confirmText: "确认添加",
+        cancelText: "取消",
+      });
+      if (confirmed === true) { void submitStrangerTarget(item); return; }
+      if (confirmed === false) return;
+    }
     const dialog = document.createElement("dialog");
     dialog.className = "stranger-dialog";
     dialog.setAttribute("aria-labelledby", "stranger-dialog-title");
