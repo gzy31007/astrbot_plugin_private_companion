@@ -12,6 +12,15 @@ const shellCss = fs.readFileSync(path.join(__dirname, "../pages/陪伴小屋/she
 const sidebarSource = fs.readFileSync(path.join(__dirname, "../pages/陪伴小屋/home-sidebar.js"), "utf8");
 const source = fs.readFileSync(path.join(__dirname, "../pages/陪伴小屋/product-page.js"), "utf8");
 const designerMemorySource = fs.readFileSync(path.join(__dirname, "../pages/陪伴小屋/persona-designer-memory.js"), "utf8");
+/* 产品契约由调用者显式选择：默认跑 main 的完整断言；生产旧基线候选显式声明
+   COMPANION_PRODUCT_CONTRACT=production-legacy，固定断言旧白名单下的行为。
+   不从被测源码或运行返回值反推能力，实现误删时必须红。 */
+const PRODUCT_CONTRACT = process.env.COMPANION_PRODUCT_CONTRACT || "main";
+if (!["main", "production-legacy"].includes(PRODUCT_CONTRACT)) {
+  throw new Error("unknown COMPANION_PRODUCT_CONTRACT: " + PRODUCT_CONTRACT);
+}
+const LEGACY = PRODUCT_CONTRACT === "production-legacy";
+const LEGACY_NOTE = "COMPANION_PRODUCT_CONTRACT=production-legacy：生产旧基线没有 designer 与人格多步";
 const relationshipApi = "host/targets/first/roles/role-first/relationships";
 const groupMemoryApi = "host/targets/first/roles/role-first/group-memory";
 
@@ -177,8 +186,13 @@ async function harness(savedTheme = null, extensions = [], options = {}) {
     }};
 }
 
-test("designer is installation scoped and available before companion setup; relays only its allowlist", async () => {
+test("designer is installation scoped and available before companion setup; relays only its allowlist", async (t) => {
   const h = await harness(null, [], {directoryUnavailable: true, designerMemory: true, lazyBundles: true});
+  if (LEGACY) {
+    assert.equal(h.product.workspace("designer"), "", LEGACY_NOTE);
+    t.skip(LEGACY_NOTE);
+    return;
+  }
   assert.match(h.product.workspace("designer"), /product-workspace-frame/);
   const designer = h.addFrame("designer"); h.product.mountWorkspace();
   await h.request(designer, "GET", "designer/options");
@@ -191,7 +205,8 @@ test("designer is installation scoped and available before companion setup; rela
   assert.equal(h.calls.length, before);
 });
 
-test("designer state and late replies survive remount while leaving the extension clears memory", async () => {
+test("designer state and late replies survive remount while leaving the extension clears memory", async (t) => {
+  if (LEGACY) { t.skip(LEGACY_NOTE); return; }
   let resolve;
   const h = await harness(null, [], {designerMemory: true, lazyBundles: true,
     postResponder: endpoint => endpoint === "persona-designer/turn"
@@ -215,7 +230,8 @@ test("designer state and late replies survive remount while leaving the extensio
   assert.equal(replacement.messages.at(-1).data.state, null);
 });
 
-test("optional designer UI failure leaves the core account workspace usable", async () => {
+test("optional designer UI failure leaves the core account workspace usable", async (t) => {
+  if (LEGACY) { t.skip(LEGACY_NOTE); return; }
   const h = await harness(null, [], {lazyBundles: true});
   const designer = h.addFrame("designer"); h.product.mountWorkspace();
   await h.request(designer, "GET", "designer/options");
@@ -338,10 +354,21 @@ test("persona questionnaire reads the selected source and relays standardization
 test("persona questionnaire relays all model steps only within its selected role", async () => {
   const h = await harness();
   h.product.mountWorkspace();
-  for (const operation of ["standardize", "tryouts", "style-rules"]) {
+  const steps = LEGACY ? ["standardize"] : ["standardize", "tryouts", "style-rules"];
+  for (const operation of steps) {
     await h.request(h.persona, "POST", "persona/" + operation, "questionnaire-" + operation, 180000);
     assert.equal(h.persona.messages.at(-1).ok, true, operation);
     assert.equal(h.calls.at(-1).endpoint, "targets/first/roles/synthetic-role/persona/" + operation);
+  }
+  if (LEGACY) {
+    /* 旧白名单只放行 standardize；多步必须被拒，且不得落到后端。 */
+    const rejected = h.calls.length;
+    for (const operation of ["tryouts", "style-rules"]) {
+      await h.request(h.persona, "POST", "persona/" + operation, "legacy-" + operation, 180000);
+      assert.equal(h.persona.messages.at(-1).ok, false, operation);
+      assert.equal(h.persona.messages.at(-1).code, "invalid_response", operation);
+    }
+    assert.equal(h.calls.length, rejected, "旧白名单的拒绝不应发出后端请求");
   }
   const before = h.calls.length;
   for (const [frame, method, path] of [

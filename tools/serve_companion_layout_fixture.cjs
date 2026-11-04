@@ -25,6 +25,21 @@ const ROOT = path.resolve(__dirname, "..");
 const PAGES = path.join(ROOT, "pages", "陪伴小屋");
 const FIXTURES = path.join(ROOT, "tests", "fixtures", "companion-layout");
 const SHELL_INJECT = '<script src="/__fixture/bridge.js"></script>';
+/* 可选的生产基线：让夹具跑“只替换候选文件”的待交付组合——未列入候选的
+   文件（旧 index.html、旧 shell app.js、旧 bundle）从基线目录读，候选文件
+   仍取仓库。基线只读，缺文件时回退仓库。 */
+const BASELINE = process.env.COMPANION_BASELINE_ROOT
+  ? path.resolve(process.env.COMPANION_BASELINE_ROOT) : "";
+/* 候选文件目录：放只存在于候选里的文件（例如按生产旧基线生成的
+   product-page.js），优先于仓库与基线。 */
+const CANDIDATE_ROOT = process.env.COMPANION_CANDIDATE_ROOT
+  ? path.resolve(process.env.COMPANION_CANDIDATE_ROOT) : "";
+const CANDIDATES = new Set([
+  "product-page.js",
+  "embedded-bridge.js",
+  "workspace-bundles/identity.js",
+  "workspaces/identity/app.js",
+]);
 
 const TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -46,6 +61,24 @@ function injectBridge(html) {
   if (head < 0) throw new Error("shell index.html has no <head>");
   const at = head + "<head>".length;
   return html.slice(0, at) + SHELL_INJECT + html.slice(at);
+}
+
+/* 夹具请求落点：候选文件取仓库，其余在基线存在时取基线。 */
+function resolvePage(requestPath) {
+  const repoFile = safeJoin(PAGES, requestPath);
+  if (!repoFile) return repoFile;
+  if (CANDIDATE_ROOT) {
+    const candidateFile = safeJoin(CANDIDATE_ROOT, requestPath);
+    if (candidateFile && fs.existsSync(candidateFile) && fs.statSync(candidateFile).isFile()) {
+      return candidateFile;
+    }
+  }
+  if (!BASELINE) return repoFile;
+  const rel = path.relative(PAGES, repoFile).split(path.sep).join("/");
+  if (CANDIDATES.has(rel)) return repoFile;
+  const baseFile = safeJoin(BASELINE, requestPath);
+  if (baseFile && fs.existsSync(baseFile) && fs.statSync(baseFile).isFile()) return baseFile;
+  return repoFile;
 }
 
 async function sendFile(response, file, { inject = false } = {}) {
@@ -80,9 +113,9 @@ const server = http.createServer(async (request, response) => {
     const shell = url.pathname === "/" || url.pathname === "/index.html";
     if (shell) {
       const fixtureShell = url.searchParams.get("fixture") === "1";
-      return await sendFile(response, path.join(PAGES, "index.html"), { inject: fixtureShell });
+      return await sendFile(response, resolvePage("/index.html"), { inject: fixtureShell });
     }
-    const file = safeJoin(PAGES, url.pathname);
+    const file = resolvePage(url.pathname);
     if (!file || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
       response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
       response.end("not found");
@@ -107,6 +140,8 @@ function startFixtureServer({ port = 0 } = {}) {
         base,
         fixture: base + "/__fixture/index.html",
         shell: base + "/index.html?fixture=1#manage/identity/people",
+        baseline: BASELINE || null,
+        candidateRoot: CANDIDATE_ROOT || null,
         close: () => new Promise(done => server.close(done)),
       });
     });
@@ -116,8 +151,8 @@ function startFixtureServer({ port = 0 } = {}) {
 module.exports = { startFixtureServer };
 
 if (require.main === module) {
-  startFixtureServer({ port: Number(process.env.FIXTURE_PORT || 0) }).then(({ fixture, shell }) => {
-    process.stdout.write(JSON.stringify({ fixture, shell }) + "\n");
+  startFixtureServer({ port: Number(process.env.FIXTURE_PORT || 0) }).then(({ fixture, shell, baseline, candidateRoot }) => {
+    process.stdout.write(JSON.stringify({ fixture, shell, baseline, candidateRoot }) + "\n");
   });
   for (const signal of ["SIGINT", "SIGTERM"]) {
     process.on(signal, () => server.close(() => process.exit(0)));
